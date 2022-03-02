@@ -3,8 +3,10 @@ package main
 import (
 	"crypto/md5"
 	"encoding/xml"
+	"flag"
 	"fmt"
 	"math/rand"
+	"os"
 	"reflect"
 	"sort"
 	"strings"
@@ -74,7 +76,7 @@ func (r Req) queryString() []byte {
 
 func (r Req) sign() string {
 	sum := md5.Sum(r.queryString())
-	return fmt.Sprintf("%x", sum)
+	return strings.ToUpper(fmt.Sprintf("%x", sum))
 }
 
 func randStr(n int) []byte {
@@ -88,7 +90,17 @@ func randStr(n int) []byte {
 	return b
 }
 
+func hint() {
+	fmt.Println("please input subcommand")
+	fmt.Println("query 查询订单")
+	os.Exit(-1)
+}
+
 func main() {
+	if len(os.Args) < 2 {
+		hint()
+	}
+	var err error
 	req := Req{
 		Service:  Service,
 		MchId:    MchId,
@@ -96,7 +108,30 @@ func main() {
 	}
 	req.Sign = req.sign()
 
-	postStr, _ := req.toXML()
-	fmt.Println(string(postStr))
+	query := flag.NewFlagSet("query", flag.ExitOnError)
+	outAuthNo := query.String("out_auth_no", "", "第三方商户号")
+	authNo := query.String("auth_no", "", "商户号")
 
+	switch os.Args[1] {
+	case "query":
+		err = query.Parse(os.Args[2:])
+		if err != nil {
+			fmt.Println(err)
+			os.Exit(-1)
+		}
+		if query.NFlag() == 0 {
+			fmt.Println("Usage of query:")
+			query.PrintDefaults()
+			os.Exit(-1)
+		}
+		req.OutAuthNo = *outAuthNo
+		req.AuthNo = *authNo
+		break
+	default:
+		hint()
+		break
+	}
+
+	xmlStr, _ := req.toXML()
+	fmt.Println(string(xmlStr))
 }
