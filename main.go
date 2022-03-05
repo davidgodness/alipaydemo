@@ -15,30 +15,55 @@ import (
 	"time"
 )
 
-const NonceStrLen = 16
-const Service = "unified.auth.query"
-const MchId = "101520021587"
-const Key = "8a4199115aa15cd81e064c796a4da1a6"
-const GatewayUrl = "https://pay.swiftpass.cn/pay/gateway"
+const (
+	NonceStrLen = 16
+	MchId       = "101520021587"
+	Key         = "8a4199115aa15cd81e064c796a4da1a6"
+	GatewayUrl  = "https://pay.swiftpass.cn/pay/gateway"
+	Query       = "unified.auth.query"
+	//UnFreeze    = "unified.auth.unfreeze"
+	//Reverse    = "unified.auth.reverse"
+)
 
-type Req struct {
-	XMLName   xml.Name `xml:"xml"`
-	Service   string   `xml:"service" json:"service,omitempty"`
-	Version   string   `xml:"version,omitempty"`
-	Charset   string   `xml:"charset,omitempty"`
-	SignType  string   `xml:"sign_type,omitempty"`
-	MchId     string   `xml:"mch_id"`
-	OutAuthNo string   `xml:"out_auth_no,omitempty"`
-	AuthNo    string   `xml:"auth_no,omitempty"`
-	NonceStr  string   `xml:"nonce_str"`
-	Sign      string   `xml:"sign"`
+// 生成指定长度的随机字符串
+func randStr(n int) []byte {
+	s := "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+	var b []byte
+	r := rand.New(rand.NewSource(time.Now().UnixNano()))
+	for i := 0; i < n; i++ {
+		b = append(b, s[r.Intn(len(s))])
+	}
+
+	return b
 }
 
-func (r Req) toXML() ([]byte, error) {
-	return xml.MarshalIndent(r, "", "  ")
+func hint() {
+	fmt.Println("please input subcommand")
+	fmt.Println("query 查询订单")
+	fmt.Println("unfreeze 解冻订单")
+	os.Exit(-1)
 }
 
-func (r Req) queryString() []byte {
+func handleSubCommand(c string, flags map[string]string, args []string) (map[string]*string, error) {
+	s := flag.NewFlagSet(c, flag.ExitOnError)
+	v := make(map[string]*string, len(flags))
+	for name, comment := range flags {
+		v[name] = s.String(name, "", comment)
+	}
+	err := s.Parse(args)
+	if err != nil {
+		return nil, err
+	}
+	if s.NFlag() == 0 {
+		fmt.Printf("Usage of %s:\n", c)
+		s.PrintDefaults()
+		return nil, err
+	}
+	return v, nil
+}
+
+// 构造出用来计算签名的查询字符串
+func queryString(r interface{}) []byte {
 	v := reflect.ValueOf(r)
 	n := v.NumField()
 	params := make(map[string]interface{}, n-1)
@@ -58,10 +83,7 @@ func (r Req) queryString() []byte {
 		params[key] = value
 		fields = append(fields, key)
 	}
-
-	/*
-		构造查询字符串
-	*/
+	fmt.Println(fields)
 	fields.Sort()
 	str := ""
 	for i := 0; i < fields.Len(); i++ {
@@ -71,72 +93,22 @@ func (r Req) queryString() []byte {
 	return []byte(strings.TrimSuffix(str, "&") + "&key=" + Key)
 }
 
-func (r Req) sign() string {
-	fmt.Println(string(r.queryString()))
-	sum := md5.Sum(r.queryString())
+// 计算签名，需要查询字符串
+func sign(queryString []byte) string {
+	sum := md5.Sum(queryString)
 	return strings.ToUpper(fmt.Sprintf("%x", sum))
 }
 
-func randStr(n int) []byte {
-	s := "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
-	var b []byte
-	r := rand.New(rand.NewSource(time.Now().UnixNano()))
-	for i := 0; i < n; i++ {
-		b = append(b, s[r.Intn(len(s))])
-	}
-
-	return b
+// 格式化成xml
+func formatXml(r interface{}) ([]byte, error) {
+	return xml.MarshalIndent(r, "", "  ")
 }
 
-func hint() {
-	fmt.Println("please input subcommand")
-	fmt.Println("query 查询订单")
-	os.Exit(-1)
-}
-
-func main() {
-	if len(os.Args) < 2 {
-		hint()
-	}
-	var err error
-	req := Req{
-		Service:  Service,
-		MchId:    MchId,
-		NonceStr: string(randStr(NonceStrLen)),
-	}
-
-	query := flag.NewFlagSet("query", flag.ExitOnError)
-	outAuthNo := query.String("out_auth_no", "", "第三方商户号")
-	authNo := query.String("auth_no", "", "商户号")
-
-	switch os.Args[1] {
-	case "query":
-		err = query.Parse(os.Args[2:])
-		if err != nil {
-			fmt.Println(err)
-			os.Exit(-1)
-		}
-		if query.NFlag() == 0 {
-			fmt.Println("Usage of query:")
-			query.PrintDefaults()
-			os.Exit(-1)
-		}
-		req.OutAuthNo = *outAuthNo
-		req.AuthNo = *authNo
-		break
-	default:
-		hint()
-		break
-	}
-
-	req.Sign = req.sign()
-	xmlStr, _ := req.toXML()
-	fmt.Println(string(xmlStr))
-
-	var resp *http.Response
-	resp, err = http.Post(GatewayUrl, "application/xml", strings.NewReader(string(xmlStr)))
+// 向网关发送post请求
+func post(content []byte) ([]byte, error) {
+	resp, err := http.Post(GatewayUrl, "application/xml", strings.NewReader(string(content)))
 	if err != nil {
-		panic(err)
+		return nil, err
 	}
 	defer func(Body io.ReadCloser) {
 		err := Body.Close()
@@ -145,11 +117,51 @@ func main() {
 		}
 	}(resp.Body)
 
-	var body []byte
+	return io.ReadAll(resp.Body)
+}
 
-	body, err = io.ReadAll(resp.Body)
-	if err != nil {
-		panic(err)
+func main() {
+	if len(os.Args) < 2 {
+		hint()
 	}
-	fmt.Println(string(body))
+
+	switch os.Args[1] {
+	case "query":
+		flags, err := handleSubCommand("query", map[string]string{
+			"out_auth_no": "第三方商户号",
+			"auth_no":     "商户号",
+		}, os.Args[2:])
+		if err != nil {
+			panic(err)
+		}
+		req := QueryReq{
+			Req: Req{
+				Service:  Query,
+				MchId:    MchId,
+				NonceStr: string(randStr(NonceStrLen)),
+			},
+			OutAuthNo: *(flags["out_auth_no"]),
+			AuthNo:    *(flags["auth_no"]),
+		}
+
+		fmt.Println(string(queryString(req)))
+		req.Sign = sign(queryString(req))
+
+		xmlStr, err := formatXml(req)
+		if err != nil {
+			panic(err)
+		}
+		fmt.Println(string(xmlStr))
+		res, err := post(xmlStr)
+		if err != nil {
+			panic(err)
+		}
+		fmt.Println(string(res))
+		break
+	case "unfreeze":
+		break
+	default:
+		hint()
+		break
+	}
 }
