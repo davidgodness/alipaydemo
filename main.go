@@ -5,7 +5,9 @@ import (
 	"encoding/xml"
 	"flag"
 	"fmt"
+	"io"
 	"math/rand"
+	"net/http"
 	"os"
 	"reflect"
 	"sort"
@@ -17,8 +19,7 @@ const NonceStrLen = 16
 const Service = "unified.auth.query"
 const MchId = "101520021587"
 const Key = "8a4199115aa15cd81e064c796a4da1a6"
-
-//const GatewayUrl = "https://pay.swiftpass.cn/pay/gateway"
+const GatewayUrl = "https://pay.swiftpass.cn/pay/gateway"
 
 type Req struct {
 	XMLName   xml.Name `xml:"xml"`
@@ -45,7 +46,7 @@ func (r Req) queryString() []byte {
 	for i := 0; i < n; i++ {
 		name := v.Type().Field(i).Name
 		tag := v.Type().Field(i).Tag
-		if name == "XMLName" {
+		if name == "XMLName" || name == "Sign" {
 			continue
 		}
 		key := tag.Get("xml")
@@ -54,10 +55,6 @@ func (r Req) queryString() []byte {
 		}
 		key = strings.TrimSuffix(key, ",omitempty")
 		value := v.Field(i).String()
-		if name == "Sign" {
-			key = "key"
-			value = Key
-		}
 		params[key] = value
 		fields = append(fields, key)
 	}
@@ -71,10 +68,11 @@ func (r Req) queryString() []byte {
 		str += fmt.Sprintf("%s=%s&", fields[i], params[fields[i]])
 	}
 
-	return []byte(strings.TrimSuffix(str, "&"))
+	return []byte(strings.TrimSuffix(str, "&") + "&key=" + Key)
 }
 
 func (r Req) sign() string {
+	fmt.Println(string(r.queryString()))
 	sum := md5.Sum(r.queryString())
 	return strings.ToUpper(fmt.Sprintf("%x", sum))
 }
@@ -106,7 +104,6 @@ func main() {
 		MchId:    MchId,
 		NonceStr: string(randStr(NonceStrLen)),
 	}
-	req.Sign = req.sign()
 
 	query := flag.NewFlagSet("query", flag.ExitOnError)
 	outAuthNo := query.String("out_auth_no", "", "第三方商户号")
@@ -132,6 +129,27 @@ func main() {
 		break
 	}
 
+	req.Sign = req.sign()
 	xmlStr, _ := req.toXML()
 	fmt.Println(string(xmlStr))
+
+	var resp *http.Response
+	resp, err = http.Post(GatewayUrl, "application/xml", strings.NewReader(string(xmlStr)))
+	if err != nil {
+		panic(err)
+	}
+	defer func(Body io.ReadCloser) {
+		err := Body.Close()
+		if err != nil {
+			panic(err)
+		}
+	}(resp.Body)
+
+	var body []byte
+
+	body, err = io.ReadAll(resp.Body)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println(string(body))
 }
