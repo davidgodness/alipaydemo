@@ -64,26 +64,11 @@ func handleSubCommand(c string, flags map[string]string, args []string) (map[str
 
 // 构造出用来计算签名的查询字符串
 func queryString(r interface{}) []byte {
-	v := reflect.ValueOf(r)
-	n := v.NumField()
-	params := make(map[string]interface{}, n-1)
+	params := convertMap(r)
 	var fields sort.StringSlice
-	for i := 0; i < n; i++ {
-		name := v.Type().Field(i).Name
-		tag := v.Type().Field(i).Tag
-		if name == "XMLName" || name == "Sign" {
-			continue
-		}
-		key := tag.Get("xml")
-		if strings.Contains(key, "omitempty") && v.Field(i).IsZero() {
-			continue
-		}
-		key = strings.TrimSuffix(key, ",omitempty")
-		value := v.Field(i).String()
-		params[key] = value
-		fields = append(fields, key)
+	for s := range params {
+		fields = append(fields, s)
 	}
-	fmt.Println(fields)
 	fields.Sort()
 	str := ""
 	for i := 0; i < fields.Len(); i++ {
@@ -91,6 +76,31 @@ func queryString(r interface{}) []byte {
 	}
 
 	return []byte(strings.TrimSuffix(str, "&") + "&key=" + Key)
+}
+
+func convertMap(i interface{}) map[string]interface{} {
+	v := reflect.ValueOf(i)
+	m := make(map[string]interface{})
+	for i := 0; i < v.NumField(); i++ {
+		if v.Field(i).Kind() == reflect.String {
+			name := v.Type().Field(i).Name
+			if name == "XMLName" || name == "Sign" {
+				continue
+			}
+			key := v.Type().Field(i).Tag.Get("xml")
+			if len(key) == 0 || strings.Contains(key, "omitempty") && v.Field(i).IsZero() {
+				continue
+			}
+			key = strings.TrimSuffix(key, ",omitempty")
+			m[key] = v.Field(i).Interface()
+		}
+		if v.Field(i).Kind() == reflect.Struct {
+			for s, i2 := range convertMap(v.Field(i).Interface()) {
+				m[s] = i2
+			}
+		}
+	}
+	return m
 }
 
 // 计算签名，需要查询字符串
@@ -143,8 +153,6 @@ func main() {
 			OutAuthNo: *(flags["out_auth_no"]),
 			AuthNo:    *(flags["auth_no"]),
 		}
-
-		fmt.Println(string(queryString(req)))
 		req.Sign = sign(queryString(req))
 
 		xmlStr, err := formatXml(req)
