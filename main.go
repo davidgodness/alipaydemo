@@ -11,6 +11,7 @@ import (
 	"os"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -21,8 +22,7 @@ const (
 	Key         = "8a4199115aa15cd81e064c796a4da1a6"
 	GatewayUrl  = "https://pay.swiftpass.cn/pay/gateway"
 	Query       = "unified.auth.query"
-	//UnFreeze    = "unified.auth.unfreeze"
-	//Reverse    = "unified.auth.reverse"
+	UnFreeze    = "unified.auth.unfreeze"
 )
 
 // 生成指定长度的随机字符串
@@ -80,6 +80,7 @@ func queryString(r interface{}) []byte {
 
 func convertMap(i interface{}) map[string]interface{} {
 	v := reflect.ValueOf(i)
+	t := reflect.TypeOf(i)
 	m := make(map[string]interface{})
 	for i := 0; i < v.NumField(); i++ {
 		if v.Field(i).Kind() == reflect.String {
@@ -89,6 +90,10 @@ func convertMap(i interface{}) map[string]interface{} {
 			}
 			key := v.Type().Field(i).Tag.Get("xml")
 			if len(key) == 0 || strings.Contains(key, "omitempty") && v.Field(i).IsZero() {
+				continue
+			}
+			if strings.Contains(key, ",cdata") {
+				m[strings.ToLower(t.Name())] = v.Field(i).Interface()
 				continue
 			}
 			key = strings.TrimSuffix(key, ",omitempty")
@@ -105,6 +110,7 @@ func convertMap(i interface{}) map[string]interface{} {
 
 // 计算签名，需要查询字符串
 func sign(queryString []byte) string {
+	fmt.Println(string(queryString))
 	sum := md5.Sum(queryString)
 	return strings.ToUpper(fmt.Sprintf("%x", sum))
 }
@@ -116,6 +122,7 @@ func formatXml(r interface{}) ([]byte, error) {
 
 // 向网关发送post请求
 func post(content []byte) ([]byte, error) {
+	fmt.Println(string(content))
 	resp, err := http.Post(GatewayUrl, "application/xml", strings.NewReader(string(content)))
 	if err != nil {
 		return nil, err
@@ -138,11 +145,14 @@ func main() {
 	switch os.Args[1] {
 	case "query":
 		flags, err := handleSubCommand("query", map[string]string{
-			"out_auth_no": "第三方商户号",
-			"auth_no":     "商户号",
+			"out_auth_no": "商户授权号",
+			"auth_no":     "平台授权号",
 		}, os.Args[2:])
 		if err != nil {
 			panic(err)
+		}
+		if flags == nil {
+			os.Exit(-1)
 		}
 		req := QueryReq{
 			Req: Req{
@@ -154,12 +164,10 @@ func main() {
 			AuthNo:    *(flags["auth_no"]),
 		}
 		req.Sign = sign(queryString(req))
-
 		xmlStr, err := formatXml(req)
 		if err != nil {
 			panic(err)
 		}
-		fmt.Println(string(xmlStr))
 		res, err := post(xmlStr)
 		if err != nil {
 			panic(err)
@@ -167,6 +175,45 @@ func main() {
 		fmt.Println(string(res))
 		break
 	case "unfreeze":
+		flags, err := handleSubCommand("unfreeze", map[string]string{
+			"auth_no":   "平台授权号",
+			"total_fee": "解冻金额",
+			"remark":    "解冻描述",
+		}, os.Args[2:])
+		if err != nil {
+			panic(err)
+		}
+		if flags == nil {
+			os.Exit(-1)
+		}
+		fee, err := strconv.Atoi(*(flags["total_fee"]))
+		if err != nil {
+			panic(err)
+		}
+		req := UnFreezeReq{
+			Req: Req{
+				Service:  UnFreeze,
+				MchId:    MchId,
+				NonceStr: string(randStr(NonceStrLen)),
+			},
+			OutRequestNo: string(randStr(NonceStrLen)),
+			AuthNo:       *(flags["auth_no"]),
+			TotalFee:     fee,
+			Remark: Remark{
+				Body: *(flags["remark"]),
+			},
+			NotifyUrl: "http://localhost",
+		}
+		req.Sign = sign(queryString(req))
+		xmlStr, err := formatXml(req)
+		if err != nil {
+			panic(err)
+		}
+		res, err := post(xmlStr)
+		if err != nil {
+			panic(err)
+		}
+		fmt.Println(string(res))
 		break
 	default:
 		hint()

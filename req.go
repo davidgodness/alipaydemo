@@ -23,14 +23,19 @@ type QueryReq struct {
 	AuthNo    string `xml:"auth_no,omitempty"`
 }
 
+type Remark struct {
+	XMLName xml.Name `xml:"remark"`
+	Body    string   `xml:",cdata"`
+}
+
 // UnFreezeReq 解冻请求
 type UnFreezeReq struct {
 	Req
-	OutRequestNo string
-	AuthNo       string
-	TotalFee     int
-	Remark       string
-	StoreId      string
-	TerminalId   string
-	NotifyUrl    string
+	Remark       Remark
+	OutRequestNo string `xml:"out_request_no"`
+	AuthNo       string `xml:"auth_no"`
+	TotalFee     int    `xml:"total_fee"`
+	StoreId      string `xml:"store_id,omitempty"`
+	TerminalId   string `xml:"terminal_id,omitempty"`
+	NotifyUrl    string `xml:"notify_url"`
 }
