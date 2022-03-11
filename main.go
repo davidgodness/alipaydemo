@@ -9,9 +9,7 @@ import (
 	"math/rand"
 	"net/http"
 	"os"
-	"reflect"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -62,62 +60,57 @@ func handleSubCommand(c string, flags map[string]string, args []string) (map[str
 	return v, nil
 }
 
+type Req map[string]string
+
 // 构造出用来计算签名的查询字符串
-func queryString(r interface{}) []byte {
-	params := convertMap(r)
+func (r Req) queryString() []byte {
 	var fields sort.StringSlice
-	for s := range params {
+	for s := range r {
 		fields = append(fields, s)
 	}
 	fields.Sort()
 	str := ""
 	for i := 0; i < fields.Len(); i++ {
-		str += fmt.Sprintf("%s=%s&", fields[i], params[fields[i]])
+		if len(r[fields[i]]) > 0 {
+			str += fmt.Sprintf("%s=%s&", fields[i], r[fields[i]])
+		}
 	}
 
 	return []byte(strings.TrimSuffix(str, "&") + "&key=" + Key)
 }
 
-func convertMap(i interface{}) map[string]interface{} {
-	v := reflect.ValueOf(i)
-	t := reflect.TypeOf(i)
-	m := make(map[string]interface{})
-	for i := 0; i < v.NumField(); i++ {
-		if v.Field(i).Kind() == reflect.String {
-			name := v.Type().Field(i).Name
-			if name == "XMLName" || name == "Sign" {
-				continue
-			}
-			key := v.Type().Field(i).Tag.Get("xml")
-			if len(key) == 0 || strings.Contains(key, "omitempty") && v.Field(i).IsZero() {
-				continue
-			}
-			if strings.Contains(key, ",cdata") {
-				m[strings.ToLower(t.Name())] = v.Field(i).Interface()
-				continue
-			}
-			key = strings.TrimSuffix(key, ",omitempty")
-			m[key] = v.Field(i).Interface()
-		}
-		if v.Field(i).Kind() == reflect.Struct {
-			for s, i2 := range convertMap(v.Field(i).Interface()) {
-				m[s] = i2
-			}
+func (r Req) MarshalXML(e *xml.Encoder, start xml.StartElement) error {
+	start.Name = xml.Name{
+		Local: "xml",
+	}
+	tokens := []xml.Token{start}
+	for k, v := range r {
+		t := xml.StartElement{Name: xml.Name{Local: k}}
+		tokens = append(tokens, t, xml.Directive(fmt.Sprintf("[CDATA[%s]]", v)), xml.EndElement{Name: t.Name})
+	}
+	tokens = append(tokens, xml.EndElement{Name: start.Name})
+
+	for _, t := range tokens {
+		err := e.EncodeToken(t)
+		if err != nil {
+			return err
 		}
 	}
-	return m
+
+	// flush to ensure tokens are written
+	err := e.Flush()
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
 
 // 计算签名，需要查询字符串
-func sign(queryString []byte) string {
-	fmt.Println(string(queryString))
-	sum := md5.Sum(queryString)
+func (r Req) sign() string {
+	fmt.Println(string(r.queryString()))
+	sum := md5.Sum(r.queryString())
 	return strings.ToUpper(fmt.Sprintf("%x", sum))
-}
-
-// 格式化成xml
-func formatXml(r interface{}) ([]byte, error) {
-	return xml.MarshalIndent(r, "", "  ")
 }
 
 // 向网关发送post请求
@@ -142,6 +135,7 @@ func main() {
 		hint()
 	}
 
+	var req Req
 	switch os.Args[1] {
 	case "query":
 		flags, err := handleSubCommand("query", map[string]string{
@@ -154,26 +148,14 @@ func main() {
 		if flags == nil {
 			os.Exit(-1)
 		}
-		req := QueryReq{
-			Req: Req{
-				Service:  Query,
-				MchId:    MchId,
-				NonceStr: string(randStr(NonceStrLen)),
-			},
-			OutAuthNo: *(flags["out_auth_no"]),
-			AuthNo:    *(flags["auth_no"]),
+		req = Req{
+			"service":     Query,
+			"mch_id":      MchId,
+			"nonce_str":   string(randStr(NonceStrLen)),
+			"out_auth_no": *(flags["out_auth_no"]),
+			"auth_no":     *(flags["auth_no"]),
 		}
-		req.Sign = sign(queryString(req))
-		xmlStr, err := formatXml(req)
-		if err != nil {
-			panic(err)
-		}
-		res, err := post(xmlStr)
-		if err != nil {
-			panic(err)
-		}
-		fmt.Println(string(res))
-		break
+		req["sign"] = req.sign()
 	case "unfreeze":
 		flags, err := handleSubCommand("unfreeze", map[string]string{
 			"auth_no":   "平台授权号",
@@ -186,37 +168,26 @@ func main() {
 		if flags == nil {
 			os.Exit(-1)
 		}
-		fee, err := strconv.Atoi(*(flags["total_fee"]))
-		if err != nil {
-			panic(err)
+		req = Req{
+			"service":        UnFreeze,
+			"mch_id":         MchId,
+			"nonce_str":      string(randStr(NonceStrLen)),
+			"out_request_no": string(randStr(NonceStrLen)),
+			"total_fee":      *(flags["total_fee"]),
+			"auth_no":        *(flags["auth_no"]),
+			"remark":         *(flags["remark"]),
 		}
-		req := UnFreezeReq{
-			Req: Req{
-				Service:  UnFreeze,
-				MchId:    MchId,
-				NonceStr: string(randStr(NonceStrLen)),
-			},
-			OutRequestNo: string(randStr(NonceStrLen)),
-			AuthNo:       *(flags["auth_no"]),
-			TotalFee:     fee,
-			Remark: Remark{
-				Body: *(flags["remark"]),
-			},
-			NotifyUrl: "http://localhost",
-		}
-		req.Sign = sign(queryString(req))
-		xmlStr, err := formatXml(req)
-		if err != nil {
-			panic(err)
-		}
-		res, err := post(xmlStr)
-		if err != nil {
-			panic(err)
-		}
-		fmt.Println(string(res))
-		break
+		req["sign"] = req.sign()
 	default:
 		hint()
-		break
 	}
+	xmlStr, err := xml.MarshalIndent(req, "", "  ")
+	if err != nil {
+		panic(err)
+	}
+	res, err := post(xmlStr)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println(string(res))
 }
